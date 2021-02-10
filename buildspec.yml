@@ -10,6 +10,7 @@ phases:
       - echo $PYTHON_38_VERSION
       - env
       - python --version
+      - pip --version
       # - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
   # build:
   #   commands:
