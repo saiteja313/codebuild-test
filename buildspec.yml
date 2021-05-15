@@ -1,26 +1,88 @@
 version: 0.2
 
+##
+# These environment variables are set automatically.
+# - AWS_REGION
+# - CODEBUILD_BUILD_ARN
+# For details, please see here.
+# https://docs.aws.amazon.com/en_us/codebuild/latest/userguide/build-env-ref-env-vars.html
+#
+# These environment variables are injected from the codebuild settings
+# - APPLICATION
+# - DOCKERHUB_PASSWORD
+# - DOCKERHUB_USERNAME
+# - ECR_REPOSITORY_NAME
+# - IMAGE1_PLACEHOLDER
+# - TARGET_STAGE
+env:
+  git-credential-helper: yes
+  variables:
+    DOCKER_BUILDKIT: 1
+    ARTIFACT_DIR: "/tmp/artifact"
 phases:
-  install:
-    runtime-versions:
-      python: latest
-      java: corretto11
+
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
-      - echo $PYTHON_38_VERSION
-      - env
-      - python --version
-      - pip --version
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-  build:
-    commands:
-      - echo Build started on `date`
-      - echo Building the Docker image...          
-      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
-      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG      
+      # CODEBUILD_BUILD_ARN: The Amazon Resource Name (ARN) of the build (for example, arn:aws:codebuild:region-ID:account-ID:build/codebuild-demo-project:b1e6661e-e4f2-4156-9ab9-82a19EXAMPLE).
+      - AWS_ACCOUNT_ID=$(echo ${CODEBUILD_BUILD_ARN} | cut -d ':' -f 5)
+      - REPOSITORY_URI=nginx
+      - IMAGE_TAG="latest"
+
+      # DockerHub login
+      # - docker login --username ${DOCKERHUB_USERNAME} --password ${DOCKERHUB_PASSWORD}
+
+      # ECR login
+      # - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}
+  # build:
+  #   commands:
+  #     - docker build --target ${TARGET_STAGE} --tag ${REPOSITORY_URI}:${IMAGE_TAG} . || docker build --tag ${REPOSITORY_URI}:${IMAGE_TAG} .
+  #     - docker tag ${REPOSITORY_URI}:${IMAGE_TAG} ${REPOSITORY_URI}:latest
+
   post_build:
     commands:
-      - echo Build completed on `date`
-      - echo Pushing the Docker image...
-      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      # - docker push ${REPOSITORY_URI}:${IMAGE_TAG}
+      # - docker push ${REPOSITORY_URI}:latest
+
+      # Create deploy config files
+      - mkdir ${ARTIFACT_DIR}
+
+      # Create imagedefinitions.json
+      # https://docs.aws.amazon.com/codepipeline/latest/userguide/file-reference.html#pipelines-create-image-definitions
+      - printf '[{"name":"%s-scheduler","imageUri":"%s"}]' "${APPLICATION}" "${REPOSITORY_URI}:${IMAGE_TAG}" | tee ${ARTIFACT_DIR}/${APPLICATION}-scheduler-imagedefinitions.json
+      - printf '[{"name":"%s-worker","imageUri":"%s"}]' "${APPLICATION}" "${REPOSITORY_URI}:${IMAGE_TAG}" | tee ${ARTIFACT_DIR}/${APPLICATION}-worker-imagedefinitions.json
+
+      # Create imageDetail.json
+      # https://docs.aws.amazon.com/codepipeline/latest/userguide/file-reference.html#file-reference-ecs-bluegreen
+      - printf '{"ImageURI":"%s"}' "${REPOSITORY_URI}:${IMAGE_TAG}" | tee ${ARTIFACT_DIR}/imageDetail.json
+
+      # Create taskdef.json
+      # https://docs.aws.amazon.com/codepipeline/latest/userguide/tutorials-ecs-ecr-codedeploy.html#tutorials-ecs-ecr-codedeploy-taskdefinition
+      - aws ecs describe-task-definition --task-definition "${APPLICATION}" > /tmp/taskdef.json
+      - jq ".taskDefinition.containerDefinitions[].image |= \"${IMAGE1_PLACEHOLDER}\" | .taskDefinition" < /tmp/taskdef.json | tee ${ARTIFACT_DIR}/taskdef.json
+      - cat ${ARTIFACT_DIR}/taskdef.json
+
+      # Create appspec.yaml
+      # https://docs.aws.amazon.com/codepipeline/latest/userguide/tutorials-ecs-ecr-codedeploy.html#tutorials-ecs-ecr-codedeploy-taskdefinition
+      - |
+        cat << EOF > ${ARTIFACT_DIR}/appspec.yaml
+        version: 0.0
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: "<TASK_DEFINITION>"
+                LoadBalancerInfo:
+                  ContainerName: "${APPLICATION}-webserver"
+                  ContainerPort: 80
+                # AWS Fargate platform versions: https://docs.aws.amazon.com/codedeploy/latest/userguide/reference-appspec-file-structure-resources.html
+                PlatformVersion: "1.4.0"
+        EOF
+
+artifacts:
+  files:
+    - ${APPLICATION}-scheduler-imagedefinitions.json
+    - ${APPLICATION}-worker-imagedefinitions.json
+    - imageDetail.json
+    - taskdef.json
+    - appspec.yaml
+  base-directory: ${ARTIFACT_DIR}
