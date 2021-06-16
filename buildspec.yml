@@ -24,6 +24,8 @@ phases:
   pre_build:
     commands:
       # CODEBUILD_BUILD_ARN: The Amazon Resource Name (ARN) of the build (for example, arn:aws:codebuild:region-ID:account-ID:build/codebuild-demo-project:b1e6661e-e4f2-4156-9ab9-82a19EXAMPLE).
+      - echo nslookup
+      - nslookup testing-ca-074598670345.d.codeartifact.us-east-2.amazonaws.com
       - AWS_ACCOUNT_ID=$(echo ${CODEBUILD_BUILD_ARN} | cut -d ':' -f 5)
       - REPOSITORY_URI=nginx
       - IMAGE_TAG="latest"
